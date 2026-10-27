@@ -1,0 +1,16 @@
+# Real deployment target files hold host names and account details - keep them local.
+deploy/targets.*.env
+!deploy/targets.example.env
+
+# Terraform working files and plans (plans can contain secrets)
+**/.terraform/
+**/tfplan
+**/tfplan.*
+*.tfstate
+*.tfstate.*
+
+# Local environment files and editor noise
+.env
+.env.*
+!.env.example
+.DS_Store

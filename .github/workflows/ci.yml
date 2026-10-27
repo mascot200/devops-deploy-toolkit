@@ -1,0 +1,19 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -x -S warning deploy/lib/common.sh deploy/scripts/*.sh install.sh tests/run-tests.sh
+      - name: tests (stub-based, no cloud access)
+        run: bash tests/run-tests.sh
