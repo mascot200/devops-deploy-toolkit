@@ -79,4 +79,5 @@ Use the deploy-planner agent to plan a staging deployment of shop-api tag 3f9c1a
 [docs/GUIDE.md](docs/GUIDE.md) - setup, a workflow for each target with example prompts, the approval handshake, scheduling drift
 audits, extending the toolkit and troubleshooting.
 
-Part of the DevOps Roadmap course, taught by Ubong Eduok.
+Created by Ubong Eduok ([@mascot200](https://github.com/mascot200)) as part of the
+[DevOps Roadmap](https://github.com/mascot200/devops-roadmap) course.
