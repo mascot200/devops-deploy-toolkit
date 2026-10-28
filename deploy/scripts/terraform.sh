@@ -12,6 +12,11 @@
 #        anything (unless ALLOW_DESTROY=1). Production needs CONFIRM_PROD=yes-deploy-prod.
 # drift  `plan -refresh-only`: exit 0 = no drift, exit 3 = drift detected. Never changes anything.
 #
+# TF_VAR_image_tag  when set (app deploys to ECS), it must be an immutable tag - floating tags are refused.
+# TF_REPLACE_OK     space-separated resource TYPES whose replacement is routine and stateless, so it does not
+#                   need ALLOW_DESTROY (default: aws_ecs_task_definition - every image deploy creates a new
+#                   immutable revision). They are still listed in the summary. Never add data-holding types.
+#
 # Credentials come from your environment (aws sso login / OIDC role). Nothing is stored here.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../lib/common.sh
@@ -23,6 +28,8 @@ require_vars TF_DIR
 need terraform
 need jq
 mode_banner
+if [ -n "${TF_VAR_image_tag:-}" ]; then reject_floating_tag "$TF_VAR_image_tag"; fi
+replace_ok="${TF_REPLACE_OK-aws_ecs_task_definition}"
 
 tf() { terraform -chdir="$TF_DIR" "$@"; }
 varfile=()
@@ -32,14 +39,21 @@ planpath="$TF_DIR/$planfile"
 
 summarise() {
   tf show -json "$planfile" >"$planpath.json"
-  local c u d
+  local c u d r
+  # shellcheck disable=SC2016  # $ok is a jq variable
+  local routine='($ok | split(" ")) as $types | (.type // "") as $t | $t != "" and ($types | index($t)) != null'
   c="$(jq '[.resource_changes[]? | select(.change.actions == ["create"])] | length' "$planpath.json")"
   u="$(jq '[.resource_changes[]? | select(.change.actions == ["update"])] | length' "$planpath.json")"
-  d="$(jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length' "$planpath.json")"
-  log "plan summary: create=$c update=$u delete_or_replace=$d"
+  d="$(jq --arg ok "$replace_ok" "[.resource_changes[]? | select((.change.actions | index(\"delete\")) and (($routine) | not))] | length" "$planpath.json")"
+  r="$(jq --arg ok "$replace_ok" "[.resource_changes[]? | select((.change.actions | index(\"delete\")) and ($routine))] | length" "$planpath.json")"
+  log "plan summary: create=$c update=$u delete_or_replace=$d routine_replace=$r"
+  if [ "$r" -gt 0 ]; then
+    log "routine replacements (stateless, allowed by TF_REPLACE_OK='$replace_ok'):"
+    jq -r --arg ok "$replace_ok" ".resource_changes[]? | select((.change.actions | index(\"delete\")) and ($routine)) | \"  - \\(.address)\"" "$planpath.json" >&2
+  fi
   if [ "$d" -gt 0 ]; then
     log "WARNING: these resources will be DELETED or REPLACED:"
-    jq -r '.resource_changes[]? | select(.change.actions | index("delete")) | "  - \(.address)  (\(.change.actions | join(",")))"' "$planpath.json" >&2
+    jq -r --arg ok "$replace_ok" ".resource_changes[]? | select((.change.actions | index(\"delete\")) and (($routine) | not)) | \"  - \\(.address)  (\\(.change.actions | join(\",\")))\"" "$planpath.json" >&2
   fi
   echo "$d" >"$planpath.deletes"
 }

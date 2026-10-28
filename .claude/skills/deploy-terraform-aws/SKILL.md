@@ -17,6 +17,10 @@ workflow **plan -> human review -> apply the same saved plan**, and refuses to s
 
 - `deploy-preflight` passed with `TARGET=terraform`.
 - `deploy/targets.<env>.env` defines `TF_DIR` (and optionally `TF_VAR_FILE`, relative to `TF_DIR`).
+- New to AWS or starting from nothing? The `provision-aws-ecs` skill sets up the state bucket, ECR, GitHub OIDC roles and
+  a load-balanced, autoscaling ECS service from `deploy/templates/terraform`; this skill is the plan/apply procedure it uses.
+- App deploys to ECS pass the image as `TF_VAR_image_tag=<git sha>`; the script refuses floating tags there too. For an
+  infra-only change keep the running version: `TF_VAR_image_tag=$(terraform -chdir=<TF_DIR> output -raw image_tag)`.
 - AWS credentials come from the environment (`aws sso login`, or an OIDC role in CI). **Never** paste keys.
   Check the identity before anything else: `aws sts get-caller-identity` and confirm it is the intended account.
 - The module uses a **remote backend with locking** (S3 with `use_lockfile`, or DynamoDB). If state is local, stop and tell the user.
@@ -64,6 +68,10 @@ ENVIRONMENT=production APPLY=1 CONFIRM_PROD=yes-deploy-prod bash deploy/scripts/
 ```
 The script refuses a plan that is older than an hour, was made from a different commit, or contains deletions
 without `ALLOW_DESTROY=1`. It applies exactly the file you reviewed.
+
+One exception is listed separately as `routine_replace`: resource types in `TF_REPLACE_OK` (default only
+`aws_ecs_task_definition`, which every image deploy replaces with a new immutable revision). Do not add other types
+unless the user explicitly asks, and never a type that holds data (databases, volumes, buckets, queues).
 
 ### 6. Verify
 Re-run `ENVIRONMENT=staging bash deploy/scripts/terraform.sh drift` (expect "no drift"), then run `post-deploy-verify`

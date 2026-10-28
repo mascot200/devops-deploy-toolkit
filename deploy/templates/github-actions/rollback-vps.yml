@@ -1,0 +1,70 @@
+# One-click rollback for the VPS pipeline (Actions -> rollback -> Run workflow).
+# Without a tag: switch back to the previous version recorded on the server.
+# With a tag:    redeploy that known-good tag (it must exist in the registry).
+# Copy to .github/workflows/rollback.yml. Uses the same environments, variables and secrets as deploy-vps.yml.
+name: rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to roll back
+        type: choice
+        options: [staging, production]
+        required: true
+      tag:
+        description: Optional known-good image tag (empty = previous version)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ vars.HEALTH_URL }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: ${{ inputs.environment }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Describe the target
+        env:
+          APP_NAME: ${{ vars.APP_NAME }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_APP_DIR: ${{ vars.VPS_APP_DIR }}
+        run: |
+          export IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          for v in APP_NAME IMAGE HEALTH_URL VPS_HOST VPS_USER VPS_APP_DIR; do printf '%s=%s\n' "$v" "${!v}"; done >"deploy/targets.$ENVIRONMENT.env"
+      - name: Load the SSH key into an agent
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" >~/.ssh/known_hosts
+          eval "$(ssh-agent -s)" >/dev/null
+          printf '%s\n' "$SSH_KEY" | ssh-add - 2>/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >>"$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >>"$GITHUB_ENV"
+      - name: Roll back
+        env:
+          # production needs the environment's reviewers to approve this run first
+          CONFIRM_PROD: ${{ inputs.environment == 'production' && 'yes-deploy-prod' || '' }}
+        run: |
+          if [ -n "$TAG" ]; then
+            APPLY=1 bash deploy/scripts/compose-deploy.sh deploy "$TAG"
+          else
+            APPLY=1 bash deploy/scripts/compose-deploy.sh rollback
+          fi
+      - name: Stop the SSH agent
+        if: always()
+        run: ssh-agent -k >/dev/null 2>&1 || true

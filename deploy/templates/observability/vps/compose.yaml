@@ -1,0 +1,96 @@
+# Monitoring for a VPS: metrics, uptime probes, dashboards and alerts.
+#   Prometheus      collects metrics and evaluates the alert rules      (127.0.0.1:9090)
+#   Alertmanager    groups alerts and sends them to Slack/email          (127.0.0.1:9093)
+#   Grafana         dashboards                                           (127.0.0.1:3000)
+#   node-exporter   CPU, memory, disk, network of the server
+#   cAdvisor        CPU, memory and restarts of every container
+#   blackbox        probes your public URL like a user would (status, latency, TLS expiry)
+# Copy deploy/templates/observability/vps to deploy/monitoring, then run
+#   ENVIRONMENT=staging bash deploy/scripts/vps-setup.sh monitoring
+# The UIs are bound to 127.0.0.1 - reach them with an SSH tunnel, never by opening ports.
+# Versions are pinned on purpose; bump them deliberately and read the release notes.
+name: monitoring
+
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "10m", max-file: "3" }
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=2GB
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus
+    logging: *logging
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    ports: ["127.0.0.1:9093:9093"]
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./secrets/alertmanager:/etc/alertmanager/secrets:ro
+      - alertmanager_data:/alertmanager
+    logging: *logging
+
+  grafana:
+    image: grafana/grafana:11.2.2
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /etc/grafana/secrets/admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+    ports: ["127.0.0.1:3000:3000"]
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - ./secrets/grafana:/etc/grafana/secrets:ro
+      - grafana_data:/var/lib/grafana
+    logging: *logging
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    restart: unless-stopped
+    command: ["--path.rootfs=/host"]
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+    logging: *logging
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    command: ["--docker_only=true", "--housekeeping_interval=30s"]
+    devices: ["/dev/kmsg"]
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    logging: *logging
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    restart: unless-stopped
+    command: ["--config.file=/etc/blackbox_exporter/blackbox.yml"]
+    volumes:
+      - ./blackbox:/etc/blackbox_exporter:ro
+    logging: *logging
+
+volumes:
+  prometheus_data:
+  alertmanager_data:
+  grafana_data:

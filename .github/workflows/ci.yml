@@ -17,3 +17,38 @@ jobs:
         run: shellcheck -x -S warning deploy/lib/common.sh deploy/scripts/*.sh install.sh tests/run-tests.sh
       - name: tests (stub-based, no cloud access)
         run: bash tests/run-tests.sh
+
+  templates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.11.4"
+          terraform_wrapper: false
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff deploy/templates/terraform
+      - name: terraform validate
+        run: |
+          for d in bootstrap modules/ecs-web-service envs/staging envs/production; do
+            echo "== $d"
+            terraform -chdir="deploy/templates/terraform/$d" init -backend=false -input=false -no-color >/dev/null
+            terraform -chdir="deploy/templates/terraform/$d" validate -no-color
+          done
+      - name: GitHub Actions templates (actionlint)
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.3 -color deploy/templates/github-actions/*.yml .github/workflows/*.yml
+      - name: Prometheus config and alert rules (promtool)
+        run: |
+          d="$PWD/deploy/templates/observability/vps/prometheus"
+          # vps-setup.sh writes the probe targets on the server; give promtool a sample
+          mkdir -p "$d/targets" && printf -- '- targets: ["https://example.com/healthz"]\n' >"$d/targets/http.yml"
+          docker run --rm -v "$d:/etc/prometheus:ro" --entrypoint promtool prom/prometheus:v2.54.1 check config /etc/prometheus/prometheus.yml
+      - name: Alertmanager config (amtool)
+        run: |
+          secrets="$(mktemp -d)" && echo "https://hooks.slack.com/services/T000/B000/XXXX" >"$secrets/slack_webhook_url"
+          docker run --rm -v "$PWD/deploy/templates/observability/vps/alertmanager:/etc/alertmanager:ro" -v "$secrets:/etc/alertmanager/secrets:ro" \
+            --entrypoint amtool prom/alertmanager:v0.27.0 check-config /etc/alertmanager/alertmanager.yml
+      - name: Compose files
+        run: |
+          cd deploy/templates/vps && cp .env.example .env && IMAGE=x IMAGE_TAG=y docker compose config --quiet && rm .env
+          cd ../observability/vps && docker compose config --quiet

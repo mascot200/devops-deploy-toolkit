@@ -1,0 +1,19 @@
+# Caddy reverse proxy. Gets a Let's Encrypt certificate for $DOMAIN automatically:
+# point the domain's DNS A record at the server first, and keep ports 80 and 443 open.
+{$DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:{$APP_PORT:8080}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

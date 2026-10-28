@@ -74,14 +74,29 @@ mode_banner() {
 }
 
 # remote: run a script (read from stdin) on the VPS over SSH. Printed in dry-run mode.
+# REMOTE_SHELL (default "bash -s") lets a caller use "sudo bash -s" for root-level setup.
 remote() {
-  local script
+  local script shell="${REMOTE_SHELL:-bash -s}"
   script="$(cat)"
   if [ "$APPLY" = "1" ]; then
-    log "SSH     ${VPS_USER}@${VPS_HOST}"
-    ssh -o BatchMode=yes -o ConnectTimeout=10 "${VPS_USER}@${VPS_HOST}" 'bash -s' <<<"$script"
+    log "SSH     ${VPS_USER}@${VPS_HOST}  ($shell)"
+    ssh -o BatchMode=yes -o ConnectTimeout=10 "${VPS_USER}@${VPS_HOST}" "$shell" <<<"$script"
   else
-    log "DRYRUN  ssh ${VPS_USER}@${VPS_HOST} 'bash -s'  <- script below"
+    log "DRYRUN  ssh ${VPS_USER}@${VPS_HOST} '$shell'  <- script below"
     sed 's/^/          | /' <<<"$script" >&2
+  fi
+}
+
+# upload_dir LOCAL_DIR REMOTE_DIR: copy a directory's files to the VPS (tar over ssh). Printed in dry-run mode.
+# Files that exist on the server and are not in LOCAL_DIR are left alone (for example the server-side .env).
+upload_dir() {
+  local src="$1" dest="$2"
+  [ -d "$src" ] || die "directory not found: $src"
+  if [ "$APPLY" = "1" ]; then
+    log "UPLOAD  $src -> ${VPS_USER}@${VPS_HOST}:$dest"
+    tar -C "$src" -cf - . | ssh -o BatchMode=yes -o ConnectTimeout=10 "${VPS_USER}@${VPS_HOST}" "mkdir -p '$dest' && tar -C '$dest' -xf -"
+  else
+    log "DRYRUN  upload $src -> ${VPS_USER}@${VPS_HOST}:$dest  files:"
+    (cd "$src" && find . -type f | LC_ALL=C sort | sed 's/^/          | /') >&2
   fi
 }

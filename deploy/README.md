@@ -14,7 +14,14 @@ deploy/
     ├── compose-deploy.sh    # Docker Compose on a VPS over SSH
     ├── terraform.sh         # AWS via Terraform: plan | apply | drift
     ├── helm-deploy.sh       # Kubernetes via Helm: diff | deploy | rollback | status
-    └── gitops-promote.sh    # Argo CD / GitOps: bump | diff | status | sync | rollback
+    ├── gitops-promote.sh    # Argo CD / GitOps: bump | diff | status | sync | rollback
+    └── vps-setup.sh         # new VPS: bootstrap | app-config | monitoring | test-alert | status
+templates/                   # copy into your repo, edit, commit (see docs/GUIDE.md section 0)
+├── docker/                  # Dockerfiles for Node, Python, Go + .dockerignore
+├── vps/                     # compose.yaml (app + Caddy auto-HTTPS), Caddyfile, .env.example
+├── observability/vps/       # Prometheus, Alertmanager, Grafana, exporters, alert rules, dashboard
+├── github-actions/          # CD pipelines (VPS, AWS ECS), rollback button, drift check
+└── terraform/               # AWS: bootstrap (state, ECR, OIDC), ecs-web-service module, staging/production
 ```
 
 ## The safety model
@@ -24,7 +31,8 @@ deploy/
 | **Dry-run by default** | Nothing changes unless `APPLY=1` is set. A dry run prints exactly what would run (for SSH it prints the whole remote script). |
 | **Production guard** | With `APPLY=1`, `ENVIRONMENT=production` also needs `CONFIRM_PROD=yes-deploy-prod`. |
 | **No floating tags** | `latest`, `main`, `master`, `stable` and `dev` are rejected. Deploy a commit SHA or semver. |
-| **Saved-plan Terraform** | `apply` uses only the plan file you reviewed; refuses a plan older than an hour, from another commit, or with deletions (unless `ALLOW_DESTROY=1`). |
+| **Saved-plan Terraform** | `apply` uses only the plan file you reviewed; refuses a plan older than an hour, from another commit, or with deletions (unless `ALLOW_DESTROY=1`). Types in `TF_REPLACE_OK` (default: `aws_ecs_task_definition`, a new immutable revision per image deploy) are listed as routine replacements instead. `TF_VAR_image_tag` must not be a floating tag. |
+| **Safe server setup** | `vps-setup.sh bootstrap` disables SSH password login only when the deploy user has a key; `app-config` never overwrites the server-side `.env`; monitoring UIs bind to `127.0.0.1`. |
 | **Atomic Helm** | `--atomic --wait`: a release whose Pods never become Ready is rolled back automatically. |
 | **GitOps = pull request** | `bump` pushes a branch; a human merging the pull request is the deployment. |
 | **Explicit contexts** | Helm and kubectl always get `--kube-context`, so the wrong cluster is not an accident waiting to happen. |
@@ -57,6 +65,7 @@ bash deploy/scripts/smoke.sh https://staging.example.com/healthz 200 30 2
 | `terraform.sh` | `terraform` (or OpenTofu aliased as `terraform`), `jq`, AWS credentials |
 | `helm-deploy.sh` | `helm`, `kubectl`; optional `helm-diff` plugin |
 | `gitops-promote.sh` | `git`; `argocd` CLI for diff/sync/status; `kustomize` optional (falls back to `sed`) |
+| `vps-setup.sh` | `ssh`, `tar`; an Ubuntu 22.04/24.04 or Debian 12 server you can reach as `root` or a sudo user |
 
 ## Testing the scripts without real infrastructure
 

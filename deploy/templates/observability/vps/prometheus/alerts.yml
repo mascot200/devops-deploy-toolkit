@@ -1,0 +1,109 @@
+# Alert rules. Each alert has a runbook: what it means and what to do first.
+# Severity: critical = users are affected now (page someone); warning = act today.
+groups:
+  - name: availability
+    rules:
+      - alert: EndpointDown
+        expr: probe_success{job="blackbox-http"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.instance }} is DOWN"
+          description: "The public health check has failed for 2 minutes. Users are probably affected."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#endpointdown"
+
+      - alert: EndpointSlow
+        expr: avg_over_time(probe_duration_seconds{job="blackbox-http"}[5m]) > 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.instance }} responds slowly ({{ $value | humanizeDuration }})"
+          description: "Average health-check time has been above 1s for 10 minutes."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#endpointslow"
+
+      - alert: TlsCertificateExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox-http"} - time()) / 86400 < 14
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "TLS certificate for {{ $labels.instance }} expires in {{ $value | humanize }} days"
+          description: "Caddy renews certificates automatically about 30 days before expiry; renewal is failing."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#tlscertificateexpiringsoon"
+
+      - alert: MonitoringTargetDown
+        expr: up == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }})"
+          description: "A part of the monitoring stack is down, so some alerts may not fire."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#monitoringtargetdown"
+
+  - name: host
+    rules:
+      - alert: HostHighCpu
+        expr: 100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 85
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Server CPU at {{ $value | humanize }}% for 15 minutes"
+          description: "Sustained high CPU makes requests slow. Find the busy container in Grafana."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#hosthighcpu"
+
+      - alert: HostLowMemory
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Less than 10% memory available on the server"
+          description: "The kernel will start killing processes (OOM) soon."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#hostlowmemory"
+
+      - alert: HostDiskAlmostFull
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"} < 0.10
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} is over 90% full"
+          description: "When the disk is full, databases and Docker stop working."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#hostdiskalmostfull"
+
+      - alert: HostDiskWillFillIn24h
+        expr: predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs|ramfs"}[6h], 24 * 3600) < 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Disk {{ $labels.mountpoint }} will be full within 24 hours at the current rate"
+          description: "Something is writing a lot (logs, uploads, images)."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#hostdiskalmostfull"
+
+  - name: containers
+    rules:
+      - alert: ContainerRestarting
+        expr: changes(container_start_time_seconds{name!=""}[15m]) > 2
+        labels:
+          severity: critical
+        annotations:
+          summary: "Container {{ $labels.name }} restarted {{ $value }} times in 15 minutes"
+          description: "A crash loop. The app is probably failing on start-up or running out of memory."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#containerrestarting"
+
+      - alert: ContainerNearMemoryLimit
+        expr: >-
+          (container_memory_working_set_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""} > 0.9)
+          and (container_spec_memory_limit_bytes{name!=""} > 0)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container {{ $labels.name }} uses over 90% of its memory limit"
+          description: "It will be OOM-killed if it grows further."
+          runbook: "https://github.com/mascot200/devops-deploy-toolkit/blob/main/docs/RUNBOOKS.md#containernearmemorylimit"

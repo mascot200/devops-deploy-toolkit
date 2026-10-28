@@ -1,0 +1,19 @@
+# Copy to your repo root as .dockerignore - keeps secrets and junk out of the image and makes builds fast.
+.git
+.github
+.claude
+deploy
+infra
+**/.env
+**/.env.*
+!**/.env.example
+**/*.pem
+**/*.key
+node_modules
+**/__pycache__
+**/*.pyc
+.venv
+coverage
+dist
+tmp
+*.log
