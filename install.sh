@@ -63,7 +63,7 @@ while IFS= read -r f; do install_file "$f"; done < <(
 # --- git-ignore entries -------------------------------------------------------------------
 gi_marker="# deploy-toolkit: local files"
 if ! grep -qF "$gi_marker" "$target/.gitignore" 2>/dev/null; then
-  say "append" ".gitignore (target files, Terraform plans)"
+  say "append" ".gitignore (target files, Terraform plans and local state)"
   if [ "$dry" = 0 ]; then
     {
       [ ! -s "$target/.gitignore" ] || echo
@@ -72,6 +72,9 @@ if ! grep -qF "$gi_marker" "$target/.gitignore" 2>/dev/null; then
       echo "!deploy/targets.example.env"
       echo "**/tfplan"
       echo "**/tfplan.*"
+      echo "**/.terraform/"
+      echo "*.tfstate"
+      echo "*.tfstate.*"
     } >>"$target/.gitignore"
   fi
 fi

@@ -1,0 +1,177 @@
+# CD for AWS (ECS Fargate behind a load balancer, managed by Terraform): every push to main is tested,
+# built, pushed to ECR (immutable tags, scanned), deployed to staging, and - after a human approves
+# in GitHub - deployed to production. Copy to .github/workflows/deploy.yml.
+#
+# Prerequisites (skill provision-aws-ecs): infra/bootstrap applied once by a human, infra/envs/<env>
+# configured. GitHub settings:
+#   repository variables: AWS_REGION, ECR_REPOSITORY (= app_name), AWS_CI_PUSH_ROLE_ARN, AWS_DEPLOY_ROLE_ARN
+#   environments: "staging" and "production" (production with Required reviewers)
+# No AWS keys anywhere: jobs get short-lived credentials through GitHub OIDC.
+#
+# Safety: Terraform applies only the plan it just made; a plan that deletes or replaces anything
+# (other than the routine new task definition revision) FAILS here on purpose - a human applies it.
+# ECS rolls back by itself when new tasks fail health checks (deployment circuit breaker), and the
+# "Verify" step fails the job if that happened.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: "1.11.4"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ADJUST: run your real tests (see the comments in deploy-vps.yml for Node/Python/Go examples)
+      - name: Tests
+        run: echo "::warning::No tests configured - edit the test job in .github/workflows/deploy.yml"
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Immutable tag (commit SHA)
+        id: meta
+        run: echo "tag=${GITHUB_SHA::12}" >>"$GITHUB_OUTPUT"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_CI_PUSH_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          provenance: false
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Block critical vulnerabilities (ECR scan on push)
+        env:
+          REPO: ${{ vars.ECR_REPOSITORY }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          aws ecr wait image-scan-complete --repository-name "$REPO" --image-id imageTag="$TAG"
+          critical="$(aws ecr describe-image-scan-findings --repository-name "$REPO" --image-id imageTag="$TAG" \
+            --query 'imageScanFindings.findingSeverityCounts.CRITICAL' --output text)"
+          echo "critical findings: $critical"
+          if [ "$critical" != "None" ] && [ "$critical" != "0" ]; then
+            echo "::error::$critical critical vulnerabilities in $REPO:$TAG - update the base image or dependencies"
+            exit 1
+          fi
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    environment:
+      name: staging
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: staging
+      TF_DIR: infra/envs/staging
+      IMAGE_TAG: ${{ needs.build.outputs.tag }}
+      TF_VAR_image_tag: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Describe the target
+        run: printf 'TF_DIR=%s\n' "$TF_DIR" >"deploy/targets.$ENVIRONMENT.env"
+      - name: Preflight
+        run: TARGET=terraform bash deploy/scripts/preflight.sh "$IMAGE_TAG"
+      - name: Plan
+        run: bash deploy/scripts/terraform.sh plan
+      - name: Apply the saved plan
+        run: |
+          if [ -f "$TF_DIR/tfplan" ]; then APPLY=1 bash deploy/scripts/terraform.sh apply; else echo "no changes"; fi
+      - name: Verify
+        run: |
+          out() { terraform -chdir="$TF_DIR" output -raw "$1"; }
+          want="$(out task_definition_arn)"
+          running="$(aws ecs describe-services --cluster "$(out cluster_name)" --services "$(out service_name)" \
+            --query 'services[0].taskDefinition' --output text)"
+          if [ "$running" != "$want" ]; then
+            echo "::error::ECS runs $running but $want was deployed - the circuit breaker rolled it back. Check the logs: $(out log_group)"
+            exit 1
+          fi
+          bash deploy/scripts/smoke.sh "$(out url)/healthz" 200 30 5
+          echo "### staging: $IMAGE_TAG is live at $(out url)" >>"$GITHUB_STEP_SUMMARY"
+
+  deploy-production:
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    # Required reviewers on this environment = the human approval. The job waits until approved.
+    environment:
+      name: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: production
+      TF_DIR: infra/envs/production
+      IMAGE_TAG: ${{ needs.build.outputs.tag }}
+      TF_VAR_image_tag: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Describe the target
+        run: printf 'TF_DIR=%s\n' "$TF_DIR" >"deploy/targets.$ENVIRONMENT.env"
+      - name: Preflight
+        run: TARGET=terraform bash deploy/scripts/preflight.sh "$IMAGE_TAG"
+      - name: Plan
+        run: bash deploy/scripts/terraform.sh plan
+      - name: Apply the saved plan (approved through the production environment)
+        env:
+          # the reviewers' approval of this job is the sign-off the production guard asks for
+          CONFIRM_PROD: yes-deploy-prod
+        run: |
+          if [ -f "$TF_DIR/tfplan" ]; then APPLY=1 bash deploy/scripts/terraform.sh apply; else echo "no changes"; fi
+      - name: Verify
+        run: |
+          out() { terraform -chdir="$TF_DIR" output -raw "$1"; }
+          want="$(out task_definition_arn)"
+          running="$(aws ecs describe-services --cluster "$(out cluster_name)" --services "$(out service_name)" \
+            --query 'services[0].taskDefinition' --output text)"
+          if [ "$running" != "$want" ]; then
+            echo "::error::ECS runs $running but $want was deployed - the circuit breaker rolled it back. Check the logs: $(out log_group)"
+            exit 1
+          fi
+          bash deploy/scripts/smoke.sh "$(out url)/healthz" 200 30 5
+          echo "### production: $IMAGE_TAG is live at $(out url)" >>"$GITHUB_STEP_SUMMARY"

@@ -16,6 +16,8 @@ For Kubernetes use `deploy-helm-k8s`; for infrastructure use `deploy-terraform-a
 
 ## Prerequisites (check, do not assume)
 
+- A new server? Run the `setup-vps` skill first: it hardens the server, installs Docker and uploads the compose file
+  with Caddy (automatic HTTPS) from `deploy/templates/vps`.
 - `deploy-preflight` passed for `TARGET=compose`.
 - `deploy/targets.<env>.env` defines `VPS_HOST VPS_USER VPS_APP_DIR IMAGE HEALTH_URL`.
 - SSH key auth works for the deploy user (agent-loaded key; **no passwords or keys in files**).
@@ -56,6 +58,7 @@ hint (or rolls back by itself when `AUTO_ROLLBACK=1` is set in the targets file)
 
 ### 5. Verify
 Run the `post-deploy-verify` skill. Do not call the deployment done until it reports `PASS`.
+To deploy on every push instead of by hand, use `setup-cd-pipeline` (vps); for alerts, `setup-observability`.
 
 ### 6. Roll back (when verification fails)
 ```bash

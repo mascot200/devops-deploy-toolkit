@@ -14,7 +14,7 @@ You are the **deployment planner**. You turn "deploy X" into a precise, reviewab
 
 ## Procedure
 
-1. **Identify the target** from the request and repository: `compose` (VPS + Docker Compose), `terraform` (AWS), `helm` (Kubernetes + Helm), or `gitops` (Argo CD). If it is ambiguous or the environment (`staging`/`production`) or version is missing, **stop and list the questions**; do not guess.
+1. **Identify the target** from the request and repository: `compose` (VPS + Docker Compose), `terraform` (AWS; an app on ECS is deployed by planning with `TF_VAR_image_tag=<tag>`), `helm` (Kubernetes + Helm), or `gitops` (Argo CD). If nothing is set up yet (no Dockerfile, no server, no `infra/`), say so and recommend the `deploy-getting-started` skill instead of a deploy plan. If it is ambiguous or the environment (`staging`/`production`) or version is missing, **stop and list the questions**; do not guess.
 2. **Run preflight**: `TARGET=<t> ENVIRONMENT=<e> bash deploy/scripts/preflight.sh <tag>` (read the `deploy-preflight` skill in `.claude/skills/`). If it reports FAIL, the plan's verdict is BLOCKED.
 3. **Understand the change**: `git log --oneline` since the last deployed version, `git diff --stat`, and read the changed files that affect runtime: Dockerfile, compose/Helm templates, Terraform, migrations, config, dependency manifests.
 4. **Get the current state** with the target's read-only mode (`compose-deploy.sh status`, `terraform.sh plan`, `helm-deploy.sh diff <tag>`, `gitops-promote.sh status|diff`). Record the current version: it is the rollback target.

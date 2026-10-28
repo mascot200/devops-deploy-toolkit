@@ -1,0 +1,163 @@
+# CD for a Docker Compose app on a VPS: every push to main is tested, built, pushed to GHCR,
+# deployed to staging, and - after a human approves in GitHub - deployed to production.
+# Copy to .github/workflows/deploy.yml. Setup checklist: skill setup-cd-pipeline, or docs/GUIDE.md.
+#
+# GitHub settings (Settings -> Environments): create "staging" and "production"; on production add
+# "Required reviewers" (that approval is the production sign-off). In EACH environment set
+#   variables: VPS_HOST, VPS_USER (deploy), VPS_APP_DIR (/opt/<app>), HEALTH_URL (https://.../healthz)
+#   secrets:   VPS_SSH_KEY     - private key of a key pair made for CI only (its public key in the
+#                                deploy user's ~/.ssh/authorized_keys)
+#              VPS_KNOWN_HOSTS - output of: ssh-keyscan -t ed25519 <host>   (pins the server identity)
+# Repository variable: APP_NAME. The server pulls from GHCR: make the package public, or run
+# `docker login ghcr.io` once on the server with a read:packages token.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ADJUST: run your real tests. Examples:
+      #   Node:   - uses: actions/setup-node@v4  (with node-version: 22, cache: npm)  then  npm ci && npm test
+      #   Python: - uses: actions/setup-python@v5 (with python-version: "3.12")       then  pip install -r requirements.txt && pytest
+      #   Go:     - uses: actions/setup-go@v5     (with go-version-file: go.mod)        then  go test ./...
+      - name: Tests
+        run: echo "::warning::No tests configured - edit the test job in .github/workflows/deploy.yml"
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      tag: ${{ steps.meta.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image name and immutable tag (commit SHA)
+        id: meta
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >>"$GITHUB_OUTPUT"
+          echo "tag=${GITHUB_SHA::12}" >>"$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Block critical vulnerabilities (Trivy)
+        env:
+          REF: ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker run --rm -e TRIVY_USERNAME -e TRIVY_PASSWORD aquasec/trivy:0.56.2 \
+            image --no-progress --severity CRITICAL --ignore-unfixed --exit-code 1 "$REF"
+
+  deploy-staging:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: ${{ vars.HEALTH_URL }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: staging
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Describe the target (no secrets in this file)
+        env:
+          APP_NAME: ${{ vars.APP_NAME }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_APP_DIR: ${{ vars.VPS_APP_DIR }}
+        run: |
+          for v in APP_NAME IMAGE HEALTH_URL VPS_HOST VPS_USER VPS_APP_DIR; do printf '%s=%s\n' "$v" "${!v}"; done >"deploy/targets.$ENVIRONMENT.env"
+          cat "deploy/targets.$ENVIRONMENT.env"
+      - name: Load the SSH key into an agent (never written to disk)
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" >~/.ssh/known_hosts
+          eval "$(ssh-agent -s)" >/dev/null
+          printf '%s\n' "$SSH_KEY" | ssh-add - 2>/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >>"$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >>"$GITHUB_ENV"
+      - name: Preflight
+        run: TARGET=compose bash deploy/scripts/preflight.sh "$TAG"
+      - name: Deploy (rolls back automatically if the health check fails)
+        run: APPLY=1 AUTO_ROLLBACK=1 bash deploy/scripts/compose-deploy.sh deploy "$TAG"
+      - name: Stop the SSH agent
+        if: always()
+        run: ssh-agent -k >/dev/null 2>&1 || true
+
+  deploy-production:
+    needs: [build, deploy-staging]
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment = the human approval. The job waits until approved.
+    environment:
+      name: production
+      url: ${{ vars.HEALTH_URL }}
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    env:
+      ENVIRONMENT: production
+      TAG: ${{ needs.build.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Describe the target (no secrets in this file)
+        env:
+          APP_NAME: ${{ vars.APP_NAME }}
+          IMAGE: ${{ needs.build.outputs.image }}
+          HEALTH_URL: ${{ vars.HEALTH_URL }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_USER: ${{ vars.VPS_USER }}
+          VPS_APP_DIR: ${{ vars.VPS_APP_DIR }}
+        run: |
+          for v in APP_NAME IMAGE HEALTH_URL VPS_HOST VPS_USER VPS_APP_DIR; do printf '%s=%s\n' "$v" "${!v}"; done >"deploy/targets.$ENVIRONMENT.env"
+          cat "deploy/targets.$ENVIRONMENT.env"
+      - name: Load the SSH key into an agent (never written to disk)
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$KNOWN_HOSTS" >~/.ssh/known_hosts
+          eval "$(ssh-agent -s)" >/dev/null
+          printf '%s\n' "$SSH_KEY" | ssh-add - 2>/dev/null
+          echo "SSH_AUTH_SOCK=$SSH_AUTH_SOCK" >>"$GITHUB_ENV"
+          echo "SSH_AGENT_PID=$SSH_AGENT_PID" >>"$GITHUB_ENV"
+      - name: Preflight
+        run: TARGET=compose bash deploy/scripts/preflight.sh "$TAG"
+      - name: Deploy (approved through the production environment)
+        env:
+          # the reviewers' approval of this job is the sign-off the production guard asks for
+          CONFIRM_PROD: yes-deploy-prod
+        run: APPLY=1 AUTO_ROLLBACK=1 bash deploy/scripts/compose-deploy.sh deploy "$TAG"
+      - name: Stop the SSH agent
+        if: always()
+        run: ssh-agent -k >/dev/null 2>&1 || true

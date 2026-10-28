@@ -11,9 +11,17 @@
 6. **GitOps-managed clusters:** change Git, not the cluster. No `kubectl apply/edit/patch` on resources owned by Argo CD or Flux.
 7. After every deployment run verification (`post-deploy-verify` skill / `release-verifier` agent). A zero exit code is not proof of health.
 8. If something fails, stop and report. Do not retry blindly or improvise a different fix.
+9. **Templates are starting points:** copy from `deploy/templates/` into the repo, edit, and commit before using them.
+   Alerts link to runbooks in the toolkit's `docs/RUNBOOKS.md`.
 
 | Goal | Skill | Agent |
 |------|-------|-------|
+| Not sure where/how to deploy; first deployment | `deploy-getting-started` | - |
+| Write a Dockerfile | `containerize-app` | - |
+| Prepare a new VPS (hardening, Docker, HTTPS) | `setup-vps` | - |
+| Deploy on every push (GitHub Actions) | `setup-cd-pipeline` | - |
+| AWS with load balancer, autoscaling, alarms | `provision-aws-ecs` | `deployer` |
+| Monitoring, dashboards, alerts | `setup-observability` | - |
 | Decide what and how to deploy | `deploy-preflight` | `deploy-planner` |
 | Review manifests/infra before shipping | - | `deploy-security-reviewer` |
 | Deploy to a VPS with Docker Compose | `deploy-compose-vps` | `deployer` |

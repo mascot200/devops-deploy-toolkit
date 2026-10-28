@@ -1,0 +1,49 @@
+# Docker Compose for one app on one VPS: your container behind Caddy, which gets and renews HTTPS
+# certificates automatically. Copy deploy/templates/vps to deploy/vps, edit, then upload with
+#   ENVIRONMENT=staging bash deploy/scripts/vps-setup.sh app-config
+# IMAGE and IMAGE_TAG are set by deploy/scripts/compose-deploy.sh; everything else comes from the
+# server-side .env next to this file (created from .env.example; never commit the real one).
+name: ${APP_NAME:-app}
+
+services:
+  app:
+    image: ${IMAGE}:${IMAGE_TAG}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      PORT: ${APP_PORT:-8080}
+    # not published on the host: only Caddy can reach it
+    expose:
+      - "${APP_PORT:-8080}"
+    mem_limit: ${APP_MEM_LIMIT:-512m}
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [web]
+
+  caddy:
+    image: caddy:2.8.4
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env on the server}
+      APP_PORT: ${APP_PORT:-8080}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [web]
+
+volumes:
+  caddy_data: # certificates - keep this volume, or Let's Encrypt may rate-limit you
+  caddy_config:
+
+networks:
+  web:
