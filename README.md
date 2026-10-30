@@ -100,7 +100,7 @@ Use the deploy-planner agent to plan a staging deployment of shop-api tag 3f9c1a
   They have **not** been run against a real AWS account, cluster or VPS by the authors. Treat your first run as a staging rehearsal and read every dry run.
 - Pinned versions in the templates (Prometheus, Grafana, Caddy, Terraform provider, ...) are known-good, not the newest. Bump them deliberately.
 - Claude Code permission prompts remain your outer safety net. See [docs/GUIDE.md](docs/GUIDE.md#6-permissions-and-the-outer-safety-net).
-- No license file is included yet; add the license you want before reusing this outside your own projects.
+- Licensed under the [MIT License](LICENSE). The software is provided "as is": you are responsible for what you deploy with it.
 
 ## Documentation
 
